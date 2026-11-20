@@ -1,0 +1,46 @@
+name: Release
+
+# Push a tag vX.Y.Z (manifest.json "version" must be X.Y.Z). CI builds, tests,
+# signs (required) and publishes whisper.zip + update.json as that release.
+# Never create the release by hand — CI is the only publisher.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - name: index.js matches align.js + plugin.js
+        run: node scripts/build.mjs --check
+
+      - name: manifest version matches the tag
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          got=$(node -e 'console.log(require("./manifest.json").version)')
+          [ "$got" = "$want" ] || { echo "::error::manifest.json says $got, tag says $want"; exit 1; }
+
+      - name: Build, test and sign
+        env:
+          # The Vibo PLUGIN-signing key (minisign id 15B3CD58A11504F3) — never the app updater key.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          REQUIRE_SIGNATURE: "1"
+        run: bash scripts/package.sh
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" whisper.zip update.json \
+            --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file CHANGELOG.md

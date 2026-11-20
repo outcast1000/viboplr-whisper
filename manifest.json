@@ -1,0 +1,83 @@
+{
+  "id": "whisper",
+  "name": "Whisper Lyrics Sync",
+  "version": "0.1.0",
+  "author": "Vibo",
+  "description": "Times a song's plain lyrics by listening to it with Whisper, so they follow the song. Only lyrics the song already has; local files only.",
+  "minAppVersion": "1.0.122",
+  "stability": "experimental",
+  "homepage": "https://github.com/outcast1000/viboplr-whisper",
+  "updateUrl": "https://github.com/outcast1000/viboplr-whisper/releases/latest/download/update.json",
+  "icon": "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3M8 22h8",
+  "runtime": "worker",
+  "permissions": [
+    "playback:read",
+    "plugins:call",
+    "library:read",
+    "lyrics:write",
+    "exec:ffmpeg",
+    "exec:whisper-cli"
+  ],
+  "optionalPermissions": [
+    "programs:run",
+    "network:github.com",
+    "network:release-assets.githubusercontent.com"
+  ],
+  "permissionReasons": {
+    "playback:read": "Notice when a song starts, for automatic syncing (off until you turn it on)",
+    "plugins:call": "Read the song's current lyrics through your lyrics providers",
+    "library:read": "Find the song's file in your library",
+    "lyrics:write": "Save the timed lyrics",
+    "exec:ffmpeg": "Read the song's audio for Whisper",
+    "exec:whisper-cli": "Listen to the song and time the words",
+    "programs:run": "Download the Whisper model (asked once, when you download it)",
+    "network:github.com": "Download the Whisper model from github.com",
+    "network:release-assets.githubusercontent.com": "GitHub's download server for the model"
+  },
+  "binaryDependencies": [
+    {
+      "name": "whisper-cli",
+      "required": true,
+      "reason": "Listen to songs and time their lyrics",
+      "definition": {
+        "description": "whisper.cpp speech recognition, built for Vibo",
+        "versionArgs": ["--version"],
+        "versionPattern": "^whisper\\.cpp version: (\\S+)$",
+        "install": { "url": "https://github.com/outcast1000/viboplr-whisper-cpp/releases" },
+        "managed": {
+          "repo": "outcast1000/viboplr-whisper-cpp",
+          "assets": {
+            "macos-arm64": "whisper-cli-macos-arm64",
+            "windows-x64": "whisper-cli-windows-x64.exe"
+          },
+          "checksum": { "file": "SHA256SUMS" }
+        }
+      }
+    }
+  ],
+  "contributes": {
+    "eventHooks": ["track:started"],
+    "contextMenuItems": [
+      { "id": "sync-lyrics", "label": "Sync lyrics with Whisper", "targets": ["track", "multi-track"] }
+    ],
+    "settingsPanel": { "id": "whisper-settings", "label": "Whisper", "order": 62 },
+    "assistant": {
+      "instructions": "Times a song's existing plain lyrics from its audio with whisper.cpp and saves them as synced lyrics. Use sync_lyrics instead of transcribing audio yourself. It never writes lyrics a song doesn't have, works on local library files only, and saves only when at least 70% of lines matched what was sung — otherwise it reports low-confidence and saves nothing.",
+      "tools": [
+        {
+          "name": "sync_lyrics",
+          "readOnly": false,
+          "description": "Time a library song's plain lyrics from its audio and save them as synced lyrics. Takes tens of seconds per song. Returns status saved / low-confidence / skipped / failed with a reason.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "artistName": { "type": "string" }
+            },
+            "required": ["title"]
+          }
+        }
+      ]
+    }
+  }
+}
