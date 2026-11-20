@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "name": "viboplr-whisper-tests",
+  "description": "Test harness for the viboplr-whisper plugin (not published; the plugin itself is manifest.json + index.js).",
+  "scripts": {
+    "test": "node --test"
+  }
+}
