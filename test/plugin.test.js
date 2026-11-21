@@ -21,6 +21,11 @@ function whisperJson(lines) {
   };
 }
 
+// [[fromSecs, toSecs, "text"]] → what `whisper-cli -ojf -ml N -sow` writes.
+function segmentJson(list) {
+  return { transcription: list.map(([from, to, text]) => ({ offsets: { from: from * 1000, to: to * 1000 }, text: " " + text })) };
+}
+
 function fakeHost(opts = {}) {
   const files = new Map(Object.entries(opts.files || { "models/ggml-large-v3-turbo-q5_0.bin": "model" }));
   const store = new Map();
@@ -58,7 +63,7 @@ function fakeHost(opts = {}) {
           if (opts.whisperFails) return { exitCode: 1, stdout: "", stderr: "error: failed to read audio" };
           if (o && o.onOutput) o.onOutput("whisper_print_progress_callback: progress =  50%", "stderr");
           const outBase = args[args.indexOf("-of") + 1].replace("/store/", "");
-          files.set(outBase + ".json", whisperJson(opts.transcript || TRANSCRIPT_LINES));
+          files.set(outBase + ".json", opts.segments ? segmentJson(opts.segments) : whisperJson(opts.transcript || TRANSCRIPT_LINES));
         }
         return { exitCode: 0, stdout: "", stderr: "" };
       },
@@ -286,5 +291,110 @@ test("on a host without the install event, Install still re-checks on a timer", 
   tick();
   await settle();
   assert.equal(whisperRow(host), "Installed · 1.9.6-5907-1");
+  p.deactivate();
+});
+
+// ------------------------------------------------------------ transcription
+
+const VIDEO = { 9: { id: 9, title: "Talk 2", artist_name: "Harbour Talks", duration_secs: 600, path: "file:///videos/talk2.mp4", kind: "video" } };
+const SPEECH = [[2, 5, "Welcome to the harbour."], [5.5, 8, "Today we talk about boats."]];
+
+async function transcribeById(host, id) {
+  host.handlers.menu["transcribe"]({ kind: "track", trackId: id });
+  for (let i = 0; i < 50 && !host.store.get("recent")?.length; i++) await settle();
+}
+
+test("a video with no lyrics is transcribed and saved as synced lyrics (its subtitles)", async () => {
+  const host = fakeHost({ lyrics: null, tracks: VIDEO, segments: SPEECH });
+  const p = await start(host);
+  await transcribeById(host, 9);
+  assert.equal(host.calls.saves.length, 1);
+  const saved = host.calls.saves[0];
+  assert.deepEqual(saved.track, { title: "Talk 2", artistName: "Harbour Talks", albumTitle: null });
+  assert.equal(saved.l.kind, "synced");
+  assert.equal(saved.l.text, "[00:02.00]Welcome to the harbour.\n[00:05.50]Today we talk about boats.\n[00:08.00]\n[10:00.00]");
+  const whisper = host.calls.exec.find((c) => c.program === "whisper-cli").args;
+  assert.equal(whisper[whisper.indexOf("-ml") + 1], "84");
+  for (const flag of ["-sow", "-ojf"]) assert.ok(whisper.includes(flag), flag);
+  for (const flag of ["-dtw", "--prompt"]) assert.ok(!whisper.includes(flag), flag + " is for syncing only");
+  assert.equal(host.store.get("recent")[0].mode, "transcribe");
+  assert.match(host.calls.notes.at(-1).message, /^Transcribed Talk 2 .*subtitles/);
+  assert.equal(host.calls.notes.at(-1).kind, "success");
+  assert.ok(![...host.files.keys()].some((k) => k.startsWith("tmp/job-")), "temp files removed");
+  p.deactivate();
+});
+
+test("transcription never replaces lyrics the track already has", async () => {
+  for (const [lyrics, re] of [
+    [{ kind: "plain", text: PLAIN }, /Sync lyrics with Whisper/],
+    [{ kind: "synced", text: "[00:01.00]x" }, /synced/],
+    [{ kind: "plain", text: PLAIN, local: true }, /Already has lyrics/],
+  ]) {
+    const host = fakeHost({ lyrics, tracks: VIDEO, segments: SPEECH });
+    const p = await start(host);
+    await transcribeById(host, 9);
+    assert.equal(host.calls.exec.length, 0);
+    assert.equal(host.calls.saves.length, 0);
+    assert.match(host.store.get("recent")[0].detail, re);
+    p.deactivate();
+  }
+});
+
+test("a skipped transcription doesn't stop automatic syncing of that song later", async () => {
+  const host = fakeHost({ tracks: VIDEO, segments: SPEECH });
+  const p = await start(host);
+  await transcribeById(host, 9);
+  assert.equal(host.store.get("recent")[0].status, "skipped");
+  assert.deepEqual(host.store.get("songStatus"), {});
+  p.deactivate();
+});
+
+test("a transcript with no speech saves nothing", async () => {
+  const host = fakeHost({ lyrics: null, tracks: VIDEO, segments: [[0, 30, "[Music]"]] });
+  const p = await start(host);
+  await transcribeById(host, 9);
+  assert.equal(host.calls.saves.length, 0);
+  assert.match(host.store.get("recent")[0].detail, /no speech/);
+  p.deactivate();
+});
+
+test("lyrics that appear while transcribing are not overwritten", async () => {
+  const host = fakeHost({ lyrics: null, tracks: VIDEO, segments: SPEECH });
+  const realExec = host.api.system.exec;
+  host.api.system.exec = async (program, args, o) => {
+    const r = await realExec(program, args, o);
+    if (program === "whisper-cli") host.setLyrics({ kind: "plain", text: "typed in meanwhile" });
+    return r;
+  };
+  const p = await start(host);
+  await transcribeById(host, 9);
+  assert.equal(host.calls.saves.length, 0);
+  assert.match(host.store.get("recent")[0].detail, /changed while transcribing/);
+  p.deactivate();
+});
+
+test("automatic mode never transcribes", async () => {
+  const host = fakeHost({ lyrics: null, segments: SPEECH });
+  const p = await start(host);
+  host.handlers.ui["set-auto"]({ value: true });
+  const t = { key: "q:1", title: "Harbour", artist_name: "Glass Harbour", duration_secs: 200, path: "file:///music/harbour.flac" };
+  host.setCurrent(t);
+  const realSetTimeout = global.setTimeout;
+  global.setTimeout = (fn) => realSetTimeout(fn, 0);
+  try { host.handlers.trackStarted(t); } finally { global.setTimeout = realSetTimeout; }
+  for (let i = 0; i < 50 && !host.store.get("recent")?.length; i++) await settle();
+  assert.equal(host.calls.saves.length, 0);
+  assert.equal(host.calls.exec.length, 0);
+  assert.equal(host.store.get("recent")[0].mode, "sync");
+  p.deactivate();
+});
+
+test("the transcribe assistant tool finds the library track and returns the outcome", async () => {
+  const host = fakeHost({ lyrics: null, tracks: VIDEO, segments: SPEECH });
+  const p = await start(host);
+  const r = await host.handlers.tools.transcribe({ title: "Talk 2", artistName: "Harbour Talks" });
+  assert.equal(r.status, "saved");
+  assert.equal(r.lines, 2);
+  await assert.rejects(() => host.handlers.tools.transcribe({ title: "Nope" }), /No library track/);
   p.deactivate();
 });

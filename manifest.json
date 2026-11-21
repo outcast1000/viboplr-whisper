@@ -1,9 +1,9 @@
 {
   "id": "whisper",
   "name": "Whisper Lyrics Sync",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "author": "Vibo",
-  "description": "Times a song's plain lyrics by listening to it with Whisper, so they follow the song. Only lyrics the song already has; local files only.",
+  "description": "Times a song's plain lyrics by listening to it with Whisper, so they follow the song, and on request transcribes tracks that have no lyrics (talks, videos) into subtitles. Local files only.",
   "minAppVersion": "1.0.122",
   "stability": "experimental",
   "homepage": "https://github.com/outcast1000/viboplr-whisper",
@@ -27,9 +27,9 @@
     "playback:read": "Notice when a song starts, for automatic syncing (off until you turn it on)",
     "plugins:call": "Read the song's current lyrics through your lyrics providers",
     "library:read": "Find the song's file in your library",
-    "lyrics:write": "Save the timed lyrics",
-    "exec:ffmpeg": "Read the song's audio for Whisper",
-    "exec:whisper-cli": "Listen to the song and time the words",
+    "lyrics:write": "Save the timed lyrics, or a transcript you asked for",
+    "exec:ffmpeg": "Read the track's audio for Whisper",
+    "exec:whisper-cli": "Listen to the track: time the words, or transcribe them when you ask",
     "programs:run": "Download the Whisper model (asked once, when you download it)",
     "network:github.com": "Download the Whisper model from github.com",
     "network:release-assets.githubusercontent.com": "GitHub's download server for the model"
@@ -38,7 +38,7 @@
     {
       "name": "whisper-cli",
       "required": true,
-      "reason": "Listen to songs and time their lyrics",
+      "reason": "Listen to tracks to time their lyrics or transcribe them",
       "definition": {
         "description": "whisper.cpp speech recognition, built for Vibo",
         "versionArgs": ["--version"],
@@ -58,16 +58,30 @@
   "contributes": {
     "eventHooks": ["track:started"],
     "contextMenuItems": [
-      { "id": "sync-lyrics", "label": "Sync lyrics with Whisper", "targets": ["track", "multi-track"] }
+      { "id": "sync-lyrics", "label": "Sync lyrics with Whisper", "targets": ["track", "multi-track"] },
+      { "id": "transcribe", "label": "Transcribe with Whisper", "targets": ["track", "multi-track"] }
     ],
     "settingsPanel": { "id": "whisper-settings", "label": "Whisper", "order": 62 },
     "assistant": {
-      "instructions": "Times a song's existing plain lyrics from its audio with whisper.cpp and saves them as synced lyrics. Use sync_lyrics instead of transcribing audio yourself. It never writes lyrics a song doesn't have, works on local library files only, and saves only when at least 70% of lines matched what was sung — otherwise it reports low-confidence and saves nothing.",
+      "instructions": "Two jobs, both with whisper.cpp on local library files only; use them instead of transcribing audio yourself. sync_lyrics times a song's existing plain lyrics from its audio and saves them as synced lyrics; it never writes lyrics a song doesn't have, and saves only when at least 70% of lines matched what was sung — otherwise it reports low-confidence and saves nothing. transcribe writes what Whisper hears in a track that has no lyrics at all (a video, a talk, an interview) as synced lyrics, which show as a video's subtitles. Use transcribe only when the user asks for a transcript or subtitles; it never replaces lyrics a track already has, and its text is unchecked, so for a song prefer real lyrics. A long video takes minutes.",
       "tools": [
         {
           "name": "sync_lyrics",
           "readOnly": false,
           "description": "Time a library song's plain lyrics from its audio and save them as synced lyrics. Takes tens of seconds per song. Returns status saved / low-confidence / skipped / failed with a reason.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "artistName": { "type": "string" }
+            },
+            "required": ["title"]
+          }
+        },
+        {
+          "name": "transcribe",
+          "readOnly": false,
+          "description": "Transcribe a library track that has no lyrics (a video, a talk) from its audio and save the transcript as synced lyrics, which show as the video's subtitles. Only when the user asked for a transcript or subtitles. Takes about as long as Whisper needs for the whole file (minutes for a long video). Returns status saved / skipped / failed with a reason.",
           "inputSchema": {
             "type": "object",
             "properties": {

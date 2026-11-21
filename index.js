@@ -239,24 +239,104 @@ var WhisperAlign = (function () {
     };
   }
 
-  var api = { alignLyrics: alignLyrics, fold: fold, similarity: similarity, formatLrcTime: formatLrcTime, lyricLines: lyricLines };
+  // ------------------------------------------------------------ transcription
+  //
+  // A transcript (no lyrics to align against) turned into timed lines, for a
+  // video or a song the user asked to transcribe. One whisper segment is one
+  // line (run whisper-cli with `-ml <chars> -sow` so segments are subtitle
+  // sized). Rules:
+  //   - Non-speech segments ("[Music]", "(laughs)", "♪") are left out: they
+  //     aren't speech, and a line starting with "[" reads as an LRC tag.
+  //   - Whisper can loop on the same sentence over silence; a line equal to
+  //     the two before it is dropped.
+  //   - A pause longer than `gapSecs` gets an empty line at the end of the
+  //     segment, so the subtitle clears instead of hanging over the silence.
+  //   - LRC minutes have two digits: nothing at or past 100:00 is written.
+  //   - With `durationSecs`, a closing empty line is put at the end of the
+  //     media. The transcript covers the whole file, and the app only shows
+  //     synced lines over a video when they reach 60% of its length.
+
+  var TRANSCRIPT_DEFAULTS = { gapSecs: 1.5, maxSecs: 5999.99 };
+
+  function isNonSpeech(text) {
+    var t = text.replace(/[♪♫\s]/g, "");
+    if (!t) return true;
+    return /^(\[[^\]]*\]|\([^)]*\)|\*[^*]*\*)+$/.test(t);
+  }
+
+  /**
+   * @param {object} transcript  parsed `whisper-cli -ojf` JSON
+   * @param {object} [options]   gapSecs, maxSecs, durationSecs
+   * @returns {{ lrc: string, lines: number, lastSecs: number }}
+   *   `lines` counts spoken lines only (not the clearing empty ones).
+   */
+  function transcriptLrc(transcript, options) {
+    var opts = {};
+    var key;
+    for (key in TRANSCRIPT_DEFAULTS) opts[key] = TRANSCRIPT_DEFAULTS[key];
+    for (key in options || {}) opts[key] = options[key];
+
+    var segments = (transcript && transcript.transcription) || [];
+    var kept = [];
+    for (var s = 0; s < segments.length; s++) {
+      var seg = segments[s];
+      var text = String(seg.text || "").replace(/\s+/g, " ").trim();
+      if (!text || isNonSpeech(text)) continue;
+      var from = ((seg.offsets && seg.offsets.from) || 0) / 1000;
+      var to = ((seg.offsets && seg.offsets.to) || 0) / 1000;
+      if (to < from) to = from;
+      if (from > opts.maxSecs) break;
+      var f = fold(text);
+      var n = kept.length;
+      if (n >= 2 && kept[n - 1].f === f && kept[n - 2].f === f) continue;
+      kept.push({ text: text, f: f, from: from, to: Math.min(to, opts.maxSecs) });
+    }
+
+    var out = [];
+    var last = -1;
+    function push(t, text) {
+      t = Math.round(Math.max(t, 0) * 100) / 100;
+      if (t <= last) t = Math.round((last + 0.01) * 100) / 100;
+      if (t > opts.maxSecs) return;
+      out.push(formatLrcTime(t) + text);
+      last = t;
+    }
+    for (var k = 0; k < kept.length; k++) {
+      push(kept[k].from, kept[k].text);
+      var next = k + 1 < kept.length ? kept[k + 1].from : Infinity;
+      if (next - kept[k].to > opts.gapSecs) push(kept[k].to, "");
+    }
+    if (kept.length && typeof opts.durationSecs === "number" && opts.durationSecs > last) {
+      push(opts.durationSecs, "");
+    }
+    return { lrc: out.join("\n"), lines: kept.length, lastSecs: kept.length ? kept[kept.length - 1].to : 0 };
+  }
+
+  var api = { alignLyrics: alignLyrics, transcriptLrc: transcriptLrc, fold: fold, similarity: similarity, formatLrcTime: formatLrcTime, lyricLines: lyricLines };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WhisperAlign = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);
   return module.exports;
 })();
 
-// Whisper: time a song's plain lyrics from its audio.
+// Whisper: time a song's plain lyrics from its audio, or transcribe a track
+// that has no lyrics at all.
 //
 // scripts/build.mjs joins align.js (as `WhisperAlign`) and this file into
 // index.js, the one file the plugin loader reads. Edit these two, never
 // index.js.
 //
-// A job, for one song:
-//   lyrics plain? → ffmpeg: 16 kHz mono WAV → whisper-cli (DTW token times,
-//   the lyrics as prompt) → align → save as synced, if enough lines anchored.
-// Only lyrics the song already has are timed: a song with none is skipped and
-// whisper's transcript is never saved as lyrics. Local files only.
+// Two kinds of job, for one track each:
+//   sync        lyrics plain? → ffmpeg: 16 kHz mono WAV → whisper-cli (DTW
+//               token times, the lyrics as prompt) → align → save as synced,
+//               if enough lines anchored. Never writes lyrics a song doesn't
+//               have. The only kind automatic mode runs.
+//   transcribe  no lyrics at all? → ffmpeg → whisper-cli (subtitle-sized
+//               segments) → timed lines → save as synced. Only on the user's
+//               own ask (the menu item or the assistant tool), never
+//               automatically, never over lyrics the track already has. For a
+//               video, synced lyrics are its subtitles.
+// Local files only.
 
 var Align = WhisperAlign;
 
@@ -294,6 +374,8 @@ var AUTO_DELAY_MS = 5000;
 var MAX_QUEUE = 20;
 var MAX_RECENT = 25;
 var PROMPT_CHARS = 220;
+// Longest transcribed line, in characters: two lines of a subtitle.
+var SUBTITLE_CHARS = 84;
 
 var api = null;
 var settings = DEFAULT_SETTINGS;
@@ -359,10 +441,13 @@ function save() {
   ]).catch(function (e) { log("error", "Saving state failed: " + e); });
 }
 
-function record(song, status, detail) {
-  recent.unshift({ title: song.title, artist: song.artistName, status: status, detail: detail || "", at: Date.now() });
+// songStatus is what automatic syncing reads ("tried before"), so only sync
+// outcomes go there: a transcription skipped for having plain lyrics must not
+// stop those lyrics being timed later.
+function record(song, mode, status, detail) {
+  recent.unshift({ title: song.title, artist: song.artistName, mode: mode, status: status, detail: detail || "", at: Date.now() });
   if (recent.length > MAX_RECENT) recent.length = MAX_RECENT;
-  songStatus[songKey(song.title, song.artistName)] = status;
+  if (mode === "sync") songStatus[songKey(song.title, song.artistName)] = status;
   save();
 }
 
@@ -476,29 +561,71 @@ function setStep(step, percent) {
   render();
 }
 
-// → Promise<{ status, detail, ratio? }>; never rejects.
-function runJob(song) {
+function done(status, detail, extra) {
+  var r = { status: status, detail: detail };
+  if (extra) for (var k in extra) r[k] = extra[k];
+  return r;
+}
+
+// Reasons to stop before reading anything; null to go on.
+function precheck(song, mode) {
+  if (!song.path) return done("skipped", "Not a local file");
+  if (mode === "transcribe") return null;
+  if (song.video) return done("skipped", "A video");
+  if (song.durationSecs && song.durationSecs < MIN_TRACK_SECS) return done("skipped", "Shorter than a minute");
+  return null;
+}
+
+// What the track's current lyrics allow; null to go on.
+function lyricsCheck(l, mode) {
+  if (mode === "transcribe") {
+    if (l.state === "synced") return done("skipped", "Already has synced lyrics");
+    if (l.state !== "none") return done("skipped", "Already has lyrics; \"Sync lyrics with Whisper\" times them");
+    return null;
+  }
+  if (l.state === "none") return done("skipped", "No lyrics to time");
+  if (l.state === "synced") return done("skipped", "Already synced");
+  if (l.state === "file") return done("skipped", "Lyrics come from the song's file; saving into files isn't supported yet");
+  return null;
+}
+
+function whisperArgs(mode, paths, lyrics) {
+  var args = ["-m", paths.model, "-f", paths.wav, "-l", settings.language || "auto", "-ojf", "-of", paths.out, "-pp"];
+  if (mode === "transcribe") return args.concat(["-ml", String(SUBTITLE_CHARS), "-sow"]);
+  var prompt = lyrics.text.replace(/\s+/g, " ").slice(0, PROMPT_CHARS);
+  return args.concat(["-nfa", "-dtw", model().dtw, "--prompt", prompt]);
+}
+
+// Transcript → { lrc?, result }: the synced text to save, if any.
+function finish(song, mode, transcript, lyrics) {
+  if (mode === "transcribe") {
+    var t = Align.transcriptLrc(transcript, { durationSecs: song.durationSecs || undefined });
+    if (!t.lines) return { result: done("skipped", "Whisper heard no speech") };
+    return { lrc: t.lrc, result: done("saved", t.lines + " lines", { lines: t.lines }) };
+  }
+  var r = Align.alignLyrics(lyrics.text, transcript, { durationSecs: song.durationSecs || undefined });
+  var pct = Math.round(r.anchoredRatio * 100);
+  if (r.anchoredRatio < MIN_ANCHORED) {
+    return { result: done("low-confidence", "Only " + pct + "% of lines matched what was sung", { ratio: r.anchoredRatio }) };
+  }
+  return { lrc: r.lrc, result: done("saved", pct + "% of lines matched", { ratio: r.anchoredRatio }) };
+}
+
+// → Promise<{ status, detail, ratio?, lines? }>; never rejects.
+function runJob(song, mode) {
   var id = "job-" + Date.now();
   var wav = id + ".wav", out = id;
   var paths = {};
   var lyrics;
 
-  function done(status, detail, extra) {
-    var r = { status: status, detail: detail };
-    if (extra) for (var k in extra) r[k] = extra[k];
-    return r;
-  }
-
-  if (!song.path) return Promise.resolve(done("skipped", "Not a local file"));
-  if (song.video) return Promise.resolve(done("skipped", "A video"));
-  if (song.durationSecs && song.durationSecs < MIN_TRACK_SECS) return Promise.resolve(done("skipped", "Shorter than a minute"));
+  var early = precheck(song, mode);
+  if (early) return Promise.resolve(early);
 
   setStep("Checking lyrics");
   return readLyrics(song).then(function (l) {
     lyrics = l;
-    if (l.state === "none") return done("skipped", "No lyrics to time");
-    if (l.state === "synced") return done("skipped", "Already synced");
-    if (l.state === "file") return done("skipped", "Lyrics come from the song's file; saving into files isn't supported yet");
+    var stop = lyricsCheck(l, mode);
+    if (stop) return stop;
     return refreshWhisperStatus().then(function (s) {
       if (!s || !s.installed) return done("failed", "whisper-cli isn't installed", { needs: "whisper-cli" });
       return modelPath().then(function (mp) {
@@ -511,33 +638,26 @@ function runJob(song) {
           return exec("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", song.path, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", paths.wav]);
         }).then(function () {
           setStep("Listening", 0);
-          var prompt = lyrics.text.replace(/\s+/g, " ").slice(0, PROMPT_CHARS);
-          return exec("whisper-cli", [
-            "-m", paths.model, "-f", paths.wav, "-l", settings.language || "auto",
-            "-ojf", "-of", paths.out, "-pp", "-nfa", "-dtw", model().dtw, "--prompt", prompt,
-          ], function (line) {
+          return exec("whisper-cli", whisperArgs(mode, paths, lyrics), function (line) {
             var m = /progress\s*=\s*(\d+)%/.exec(line);
             if (m) setStep("Listening", +m[1]);
           });
         }).then(function () {
-          setStep("Lining up the lyrics");
+          setStep(mode === "transcribe" ? "Writing the lines" : "Lining up the lyrics");
           return api.storage.files.readJson(["tmp", out + ".json"]);
         }).then(function (transcript) {
-          var r = Align.alignLyrics(lyrics.text, transcript, { durationSecs: song.durationSecs || undefined });
-          var pct = Math.round(r.anchoredRatio * 100);
-          if (r.anchoredRatio < MIN_ANCHORED) {
-            return done("low-confidence", "Only " + pct + "% of lines matched what was sung", { ratio: r.anchoredRatio });
-          }
-          // Read again: the user may have saved synced lyrics while this ran.
+          var f = finish(song, mode, transcript, lyrics);
+          if (!f.lrc) return f.result;
+          // Read again: the user may have saved lyrics while this ran.
           return readLyrics(song).then(function (again) {
-            if (again.state !== "plain") return done("skipped", "The lyrics changed while timing them");
+            if (again.state !== lyrics.state) {
+              return done("skipped", "The lyrics changed while " + (mode === "transcribe" ? "transcribing" : "timing them"));
+            }
             setStep("Saving");
             return api.lyrics.save(
               { title: song.title, artistName: song.artistName, albumTitle: song.albumTitle },
-              { text: r.lrc, kind: "synced" },
-            ).then(function () {
-              return done("saved", pct + "% of lines matched", { ratio: r.anchoredRatio });
-            });
+              { text: f.lrc, kind: "synced" },
+            ).then(function () { return f.result; });
           });
         });
       });
@@ -545,7 +665,7 @@ function runJob(song) {
   }).catch(function (e) {
     var msg = e && e.message ? e.message : String(e);
     if (msg === "Cancelled") return done("cancelled", "Cancelled");
-    log("error", "Syncing " + describe(song) + " failed: " + msg);
+    log("error", (mode === "transcribe" ? "Transcribing " : "Syncing ") + describe(song) + " failed: " + msg);
     return done("failed", msg);
   }).then(function (result) {
     return removeTmp([wav, out + ".json"]).then(function () { return result; });
@@ -554,14 +674,15 @@ function runJob(song) {
 
 // ---------------------------------------------------------------- the queue
 
-function enqueue(song, manual) {
+function enqueue(song, manual, mode) {
+  mode = mode || "sync";
   var key = songKey(song.title, song.artistName);
   var dup = (current && songKey(current.song.title, current.song.artistName) === key) ||
     queue.some(function (j) { return songKey(j.song.title, j.song.artistName) === key; });
-  if (dup) return Promise.resolve({ status: "skipped", detail: "Already being synced" });
-  if (queue.length >= MAX_QUEUE) return Promise.resolve({ status: "skipped", detail: "Too many songs waiting" });
+  if (dup) return Promise.resolve({ status: "skipped", detail: "Already being worked on" });
+  if (queue.length >= MAX_QUEUE) return Promise.resolve({ status: "skipped", detail: "Too many tracks waiting" });
   return new Promise(function (resolve) {
-    var job = { song: song, manual: manual, resolve: resolve };
+    var job = { song: song, manual: manual, mode: mode, resolve: resolve };
     // Newest first: what the user just asked for or just started playing.
     queue.unshift(job);
     render();
@@ -573,11 +694,11 @@ function pump() {
   if (working || !queue.length) return;
   working = true;
   var job = queue.shift();
-  current = { song: job.song, step: "Starting", percent: null, handle: null };
+  current = { song: job.song, mode: job.mode, step: "Starting", percent: null, handle: null };
   render();
-  runJob(job.song).then(function (result) {
+  runJob(job.song, job.mode).then(function (result) {
     if (!api) { job.resolve(result); return; } // deactivated mid-job
-    if (result.status !== "cancelled") record(job.song, result.status, result.detail);
+    if (result.status !== "cancelled") record(job.song, job.mode, result.status, result.detail);
     announce(job, result);
     job.resolve(result);
   }).then(function () {
@@ -591,6 +712,16 @@ function pump() {
 
 function announce(job, result) {
   var name = describe(job.song);
+  if (job.mode === "transcribe") {
+    if (result.status === "saved") {
+      notify("Transcribed " + name + " (" + result.detail + ")" + (job.song.video ? " — turn on subtitles to see them" : ""), "success");
+    } else if (job.manual && result.status === "failed") {
+      notify("Couldn't transcribe " + name + ": " + result.detail, "error");
+    } else if (job.manual && result.status === "skipped") {
+      notify("Didn't transcribe " + name + ": " + result.detail, "info");
+    }
+    return;
+  }
   if (result.status === "saved") {
     notify("Synced lyrics for " + name, "success");
   } else if (job.manual && result.status === "low-confidence") {
@@ -621,10 +752,16 @@ function findLocal(title, artistName) {
   });
 }
 
-function syncTargets(targets) {
+function syncTargets(targets, mode) {
   return Promise.all(targets.map(songFromTarget)).then(function (songs) {
-    songs.forEach(function (song) { if (song) enqueue(song, true); });
+    songs.forEach(function (song) { if (song) enqueue(song, true, mode); });
   });
+}
+
+function menuTargets(target) {
+  return target && target.kind === "multi-track" && Array.isArray(target.trackIds)
+    ? target.trackIds.map(function (id) { return { trackId: id }; })
+    : [target];
 }
 
 // ------------------------------------------------------------------- auto
@@ -646,8 +783,11 @@ function onTrackStarted(track) {
 
 // ------------------------------------------------------------------ panel
 
-function statusLabel(s) {
-  return { saved: "Saved", "low-confidence": "Not saved — low match", failed: "Failed", skipped: "Skipped" }[s] || s;
+function statusLabel(r) {
+  if (r.mode === "transcribe") {
+    return { saved: "Transcribed", failed: "Transcription failed", skipped: "Not transcribed" }[r.status] || r.status;
+  }
+  return { saved: "Saved", "low-confidence": "Not saved — low match", failed: "Failed", skipped: "Skipped" }[r.status] || r.status;
 }
 
 function render() {
@@ -655,7 +795,7 @@ function render() {
   var m = model();
   var children = [];
 
-  children.push({ type: "text", content: "Adds timings to a song's plain lyrics by listening to the song with Whisper. Songs without lyrics are left alone, and nothing Whisper hears is saved as lyrics. Local files only." });
+  children.push({ type: "text", content: "Adds timings to a song's plain lyrics by listening to the song with Whisper. A track with no lyrics at all (a talk, an interview, a video) can be transcribed instead: right-click it and choose \"Transcribe with Whisper\". For a video the transcript shows as its subtitles. Transcription only runs when you ask for it and never replaces lyrics a track already has. Local files only." });
 
   // whisper-cli
   var w = whisperStatus;
@@ -680,7 +820,7 @@ function render() {
 
   // now
   if (current) {
-    var now = [{ type: "text", content: describe(current.song) + " — " + current.step + (current.percent != null ? " " + current.percent + "%" : "") + "…" }];
+    var now = [{ type: "text", content: (current.mode === "transcribe" ? "Transcribing " : "Syncing ") + describe(current.song) + " — " + current.step + (current.percent != null ? " " + current.percent + "%" : "") + "…" }];
     if (current.percent != null) now.push({ type: "progress-bar", value: current.percent, max: 100 });
     now.push({ type: "toolbar", buttons: [{ label: "Cancel", action: "cancel-job", variant: "secondary" }], status: queue.length ? queue.length + " more waiting" : undefined });
     children.push({ type: "section", title: "Now", children: now });
@@ -690,7 +830,7 @@ function render() {
     type: "section",
     title: "Recent",
     children: recent.length
-      ? recent.map(function (r) { return { type: "text", content: statusLabel(r.status) + " · " + (r.artist ? r.title + " — " + r.artist : r.title) + (r.detail ? " · " + r.detail : "") }; })
+      ? recent.map(function (r) { return { type: "text", content: statusLabel(r) + " · " + (r.artist ? r.title + " — " + r.artist : r.title) + (r.detail ? " · " + r.detail : "") }; })
       : [{ type: "text", content: "Nothing yet. Right-click a song and choose \"Sync lyrics with Whisper\"." }],
   });
 
@@ -717,10 +857,10 @@ function activate(pluginApi) {
   }).catch(function (e) { log("error", "Loading state failed: " + e); });
 
   unsubs.push(api.contextMenu.onAction("sync-lyrics", function (target) {
-    var targets = target && target.kind === "multi-track" && Array.isArray(target.trackIds)
-      ? target.trackIds.map(function (id) { return { trackId: id }; })
-      : [target];
-    syncTargets(targets).catch(function (e) { notify("Couldn't sync lyrics: " + e, "error"); });
+    syncTargets(menuTargets(target), "sync").catch(function (e) { notify("Couldn't sync lyrics: " + e, "error"); });
+  }));
+  unsubs.push(api.contextMenu.onAction("transcribe", function (target) {
+    syncTargets(menuTargets(target), "transcribe").catch(function (e) { notify("Couldn't transcribe: " + e, "error"); });
   }));
 
   unsubs.push(api.playback.onTrackStarted(onTrackStarted));
@@ -772,7 +912,16 @@ function activate(pluginApi) {
       if (!title) return Promise.reject(new Error("title is required"));
       return findLocal(title, artist).then(function (song) {
         if (!song) throw new Error("No library track matches \"" + title + "\"" + (artist ? " by " + artist : ""));
-        return enqueue(song, false);
+        return enqueue(song, false, "sync");
+      });
+    }));
+    unsubs.push(api.assistant.onTool("transcribe", function (args) {
+      var title = args && typeof args.title === "string" ? args.title.trim() : "";
+      var artist = args && typeof args.artistName === "string" ? args.artistName.trim() : "";
+      if (!title) return Promise.reject(new Error("title is required"));
+      return findLocal(title, artist).then(function (song) {
+        if (!song) throw new Error("No library track matches \"" + title + "\"" + (artist ? " by " + artist : ""));
+        return enqueue(song, false, "transcribe");
       });
     }));
   }

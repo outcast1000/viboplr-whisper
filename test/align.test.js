@@ -139,3 +139,50 @@ test("LRC times are mm:ss.cc", () => {
   assert.equal(formatLrcTime(83.456), "[01:23.46]");
   assert.equal(formatLrcTime(600), "[10:00.00]");
 });
+
+// ------------------------------------------------------------ transcriptLrc
+const { transcriptLrc } = require("../align.js");
+
+// segments: [[fromSecs, toSecs, "text"]], the way `-ojf -ml N -sow` writes them.
+function segments(list) {
+  return { transcription: list.map(([from, to, text]) => ({ offsets: { from: from * 1000, to: to * 1000 }, text: " " + text })) };
+}
+
+test("transcript segments become timed lines, one per segment", () => {
+  const r = transcriptLrc(segments([[1.2, 3.9, "Welcome back to the show."], [4.0, 6.5, "Today we talk about boats."]]));
+  assert.equal(r.lines, 2);
+  assert.equal(r.lrc, "[00:01.20]Welcome back to the show.\n[00:04.00]Today we talk about boats.\n[00:06.50]");
+});
+
+test("a long pause clears the line; a short one doesn't", () => {
+  const r = transcriptLrc(segments([[0, 2, "One."], [2.5, 4, "Two."], [10, 12, "Three."]]));
+  assert.equal(r.lrc, "[00:00.00]One.\n[00:02.50]Two.\n[00:04.00]\n[00:10.00]Three.\n[00:12.00]");
+});
+
+test("non-speech segments are left out, so no line reads as an LRC tag", () => {
+  const r = transcriptLrc(segments([[0, 5, "[Music]"], [5, 7, "(laughs)"], [7, 9, "♪ ♪"], [9, 11, "Hello there."], [11, 12, "[BLANK_AUDIO]"]]));
+  assert.equal(r.lines, 1);
+  assert.equal(r.lrc, "[00:09.00]Hello there.\n[00:11.00]");
+});
+
+test("whisper's loops are cut after two repeats", () => {
+  const r = transcriptLrc(segments([[0, 1, "Thank you."], [1, 2, "Thank you."], [2, 3, "thank you"], [3, 4, "Thank you."], [4, 5, "Goodbye."]]));
+  assert.equal(r.lines, 3);
+  assert.match(r.lrc, /Goodbye\.$/m);
+});
+
+test("with the media's length, a closing empty line lands at its end", () => {
+  const r = transcriptLrc(segments([[1, 3, "Only at the start."]]), { durationSecs: 1030.87 });
+  assert.equal(r.lrc, "[00:01.00]Only at the start.\n[00:03.00]\n[17:10.87]");
+});
+
+test("nothing past 99:59.99 is written, since LRC minutes have two digits", () => {
+  const r = transcriptLrc(segments([[5990, 5995, "Near the end."], [6001, 6003, "Too late."]]), { durationSecs: 7200 });
+  assert.equal(r.lines, 1);
+  assert.equal(r.lrc, "[99:50.00]Near the end.\n[99:55.00]");
+});
+
+test("an empty or speechless transcript has no lines", () => {
+  assert.deepEqual(transcriptLrc({ transcription: [] }), { lrc: "", lines: 0, lastSecs: 0 });
+  assert.equal(transcriptLrc(segments([[0, 30, "[Music]"]]), { durationSecs: 60 }).lrc, "");
+});

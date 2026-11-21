@@ -236,7 +236,80 @@
     };
   }
 
-  var api = { alignLyrics: alignLyrics, fold: fold, similarity: similarity, formatLrcTime: formatLrcTime, lyricLines: lyricLines };
+  // ------------------------------------------------------------ transcription
+  //
+  // A transcript (no lyrics to align against) turned into timed lines, for a
+  // video or a song the user asked to transcribe. One whisper segment is one
+  // line (run whisper-cli with `-ml <chars> -sow` so segments are subtitle
+  // sized). Rules:
+  //   - Non-speech segments ("[Music]", "(laughs)", "♪") are left out: they
+  //     aren't speech, and a line starting with "[" reads as an LRC tag.
+  //   - Whisper can loop on the same sentence over silence; a line equal to
+  //     the two before it is dropped.
+  //   - A pause longer than `gapSecs` gets an empty line at the end of the
+  //     segment, so the subtitle clears instead of hanging over the silence.
+  //   - LRC minutes have two digits: nothing at or past 100:00 is written.
+  //   - With `durationSecs`, a closing empty line is put at the end of the
+  //     media. The transcript covers the whole file, and the app only shows
+  //     synced lines over a video when they reach 60% of its length.
+
+  var TRANSCRIPT_DEFAULTS = { gapSecs: 1.5, maxSecs: 5999.99 };
+
+  function isNonSpeech(text) {
+    var t = text.replace(/[♪♫\s]/g, "");
+    if (!t) return true;
+    return /^(\[[^\]]*\]|\([^)]*\)|\*[^*]*\*)+$/.test(t);
+  }
+
+  /**
+   * @param {object} transcript  parsed `whisper-cli -ojf` JSON
+   * @param {object} [options]   gapSecs, maxSecs, durationSecs
+   * @returns {{ lrc: string, lines: number, lastSecs: number }}
+   *   `lines` counts spoken lines only (not the clearing empty ones).
+   */
+  function transcriptLrc(transcript, options) {
+    var opts = {};
+    var key;
+    for (key in TRANSCRIPT_DEFAULTS) opts[key] = TRANSCRIPT_DEFAULTS[key];
+    for (key in options || {}) opts[key] = options[key];
+
+    var segments = (transcript && transcript.transcription) || [];
+    var kept = [];
+    for (var s = 0; s < segments.length; s++) {
+      var seg = segments[s];
+      var text = String(seg.text || "").replace(/\s+/g, " ").trim();
+      if (!text || isNonSpeech(text)) continue;
+      var from = ((seg.offsets && seg.offsets.from) || 0) / 1000;
+      var to = ((seg.offsets && seg.offsets.to) || 0) / 1000;
+      if (to < from) to = from;
+      if (from > opts.maxSecs) break;
+      var f = fold(text);
+      var n = kept.length;
+      if (n >= 2 && kept[n - 1].f === f && kept[n - 2].f === f) continue;
+      kept.push({ text: text, f: f, from: from, to: Math.min(to, opts.maxSecs) });
+    }
+
+    var out = [];
+    var last = -1;
+    function push(t, text) {
+      t = Math.round(Math.max(t, 0) * 100) / 100;
+      if (t <= last) t = Math.round((last + 0.01) * 100) / 100;
+      if (t > opts.maxSecs) return;
+      out.push(formatLrcTime(t) + text);
+      last = t;
+    }
+    for (var k = 0; k < kept.length; k++) {
+      push(kept[k].from, kept[k].text);
+      var next = k + 1 < kept.length ? kept[k + 1].from : Infinity;
+      if (next - kept[k].to > opts.gapSecs) push(kept[k].to, "");
+    }
+    if (kept.length && typeof opts.durationSecs === "number" && opts.durationSecs > last) {
+      push(opts.durationSecs, "");
+    }
+    return { lrc: out.join("\n"), lines: kept.length, lastSecs: kept.length ? kept[kept.length - 1].to : 0 };
+  }
+
+  var api = { alignLyrics: alignLyrics, transcriptLrc: transcriptLrc, fold: fold, similarity: similarity, formatLrcTime: formatLrcTime, lyricLines: lyricLines };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WhisperAlign = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

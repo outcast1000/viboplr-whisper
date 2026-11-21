@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- New: **Transcribe with Whisper**. Right-click a track that has no lyrics at all, such as a talk, an interview or a video, and Whisper writes down what it hears as synced lyrics. For a video they show as its subtitles; turn them on with the subtitle button over the video.
+- Transcription runs only when you ask for it. It never replaces lyrics a track already has (a track with plain lyrics is pointed at **Sync lyrics with Whisper** instead), and automatic mode never transcribes.
+- Lines are subtitle-sized. The subtitle clears during long pauses, and non-speech markers such as "[Music]" are left out.
+- Assistant tool `transcribe`.
+
 ## 0.1.1
 
 - The settings panel shows whisper-cli as installed as soon as the install finishes, however long the install dialog was left open, and also when it is installed from Extensions → Tools. Needs a Vibo release with `api.system.onDependencyInstalled`; on older versions the panel re-checks for five minutes after Install, as before.
