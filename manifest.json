@@ -1,7 +1,7 @@
 {
   "id": "whisper",
   "name": "Whisper Lyrics Sync",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "Vibo",
   "description": "Times a song's plain lyrics by listening to it with Whisper, so they follow the song, and on request transcribes tracks that have no lyrics (talks, videos) into subtitles. Local files only.",
   "minAppVersion": "1.0.122",

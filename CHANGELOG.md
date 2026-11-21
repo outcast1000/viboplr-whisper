@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1
+
+- Fixed: jobs failed before Whisper started, because ffmpeg was given no file to write the audio to.
+- A sync or transcription you start says so, with **Show progress** to open the plugin's settings, where its progress is shown.
+- Settings: one **Model** row to choose the model, saying whether it's downloaded. The Download button shows only while it isn't.
+
 ## 0.2.0
 
 - New: **Transcribe with Whisper**. Right-click a track that has no lyrics at all, such as a talk, an interview or a video, and Whisper writes down what it hears as synced lyrics. For a video they show as its subtitles; turn them on with the subtitle button over the video.
