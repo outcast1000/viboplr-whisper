@@ -44,7 +44,8 @@ function fakeHost(opts = {}) {
       set: async (k, v) => { store.set(k, v); },
       files: {
         exists: async (p) => files.has(p.join("/")),
-        getPath: async (p) => "/store/" + p.join("/"),
+        // Like the host: a path only for a file that exists, else null.
+        getPath: async (p) => (files.has(p.join("/")) ? "/store/" + p.join("/") : null),
         writeText: async (p, s) => { files.set(p.join("/"), s); },
         readJson: async (p) => {
           const v = files.get(p.join("/"));
@@ -85,7 +86,7 @@ function fakeHost(opts = {}) {
     },
     ui: {
       setViewData: (id, data) => { calls.views++; calls.lastView = data; },
-      showNotification: (message, o) => { calls.notes.push({ message, kind: o && o.kind }); },
+      showNotification: (message, o) => { calls.notes.push({ message, kind: o && o.kind, action: o && o.action }); },
       onAction: (id, h) => { handlers.ui[id] = h; return () => {}; },
       requestAction: (action, payload) => { calls.requests.push({ action, payload }); },
     },
@@ -396,5 +397,47 @@ test("the transcribe assistant tool finds the library track and returns the outc
   assert.equal(r.status, "saved");
   assert.equal(r.lines, 2);
   await assert.rejects(() => host.handlers.tools.transcribe({ title: "Nope" }), /No library track/);
+  p.deactivate();
+});
+
+// ------------------------------------------------------------ host contract
+
+test("every program gets string arguments — temp files that don't exist yet included", async () => {
+  for (const [opts, run] of [
+    [{}, (host) => syncById(host, 7)],
+    [{ lyrics: null, tracks: VIDEO, segments: SPEECH }, (host) => transcribeById(host, 9)],
+  ]) {
+    const host = fakeHost(opts);
+    const p = await start(host);
+    await run(host);
+    assert.ok(host.calls.exec.length >= 2, "ffmpeg and whisper-cli ran");
+    for (const c of host.calls.exec) {
+      for (const a of c.args) assert.equal(typeof a, "string", c.program + " got " + a);
+    }
+    const ffmpeg = host.calls.exec.find((c) => c.program === "ffmpeg").args;
+    assert.match(ffmpeg.at(-1), /^\/store\/tmp\/job-\d+\.wav$/);
+    assert.equal(host.store.get("recent")[0].status, "saved");
+    p.deactivate();
+  }
+});
+
+test("a job the user asked for says it started, with a way to its progress", async () => {
+  const host = fakeHost({ lyrics: null, tracks: VIDEO, segments: SPEECH });
+  const p = await start(host);
+  await transcribeById(host, 9);
+  const started = host.calls.notes.find((n) => /^Transcribing Talk 2/.test(n.message));
+  assert.ok(started, "start notice shown");
+  assert.deepEqual(started.action, { label: "Show progress", id: "show-progress" });
+  host.handlers.ui["show-progress"]();
+  assert.deepEqual(host.calls.requests.at(-1), { action: "open-extension-settings", payload: {} });
+  p.deactivate();
+});
+
+test("a job turned down before any work shows no start notice", async () => {
+  const host = fakeHost({ lyrics: { kind: "synced", text: "[00:01.00]x" }, tracks: VIDEO });
+  const p = await start(host);
+  await transcribeById(host, 9);
+  assert.equal(host.calls.notes.filter((n) => /^Transcribing/.test(n.message)).length, 0);
+  assert.match(host.calls.notes.at(-1).message, /^Didn't transcribe/);
   p.deactivate();
 });

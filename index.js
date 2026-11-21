@@ -429,8 +429,17 @@ function log(level, message) {
   try { api.log(level, message); } catch (e) { /* logging must never break a job */ }
 }
 
-function notify(message, kind) {
-  try { api.ui.showNotification(message, { kind: kind }); } catch (e) { log("error", "notify failed: " + e); }
+function notify(message, kind, action) {
+  var opts = { kind: kind };
+  if (action) opts.action = action;
+  try { api.ui.showNotification(message, opts); } catch (e) { log("error", "notify failed: " + e); }
+}
+
+// A job the user asked for takes tens of seconds, and its progress is drawn
+// only in this plugin's settings panel: say it started, with a way there.
+function announceStart(song, mode) {
+  notify((mode === "transcribe" ? "Transcribing " : "Syncing the lyrics of ") + describe(song) + "…", "info",
+    { label: "Show progress", id: "show-progress" });
 }
 
 function save() {
@@ -532,9 +541,16 @@ function downloadModel() {
 
 // ---------------------------------------------------------------- the job
 
+// Absolute path for a temp file that doesn't exist yet. getPath answers only
+// for files that exist (null otherwise), so ask for the .keep file and swap
+// the name: asking for the .wav itself handed ffmpeg a null argument.
 function tmpPath(name) {
   return api.storage.files.writeText(["tmp", ".keep"], "").then(function () {
-    return api.storage.files.getPath(["tmp", name]);
+    return api.storage.files.getPath(["tmp", ".keep"]);
+  }).then(function (keep) {
+    if (typeof keep !== "string" || !keep) throw new Error("Couldn't find the plugin's temp folder");
+    var cut = Math.max(keep.lastIndexOf("/"), keep.lastIndexOf("\\"));
+    return keep.slice(0, cut + 1) + name;
   });
 }
 
@@ -634,6 +650,7 @@ function runJob(song, mode) {
         return Promise.all([tmpPath(wav), tmpPath(out)]).then(function (p) {
           paths.wav = p[0];
           paths.out = p[1];
+          if (current && current.manual) announceStart(song, mode);
           setStep("Reading the audio");
           return exec("ffmpeg", ["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", song.path, "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", paths.wav]);
         }).then(function () {
@@ -694,7 +711,7 @@ function pump() {
   if (working || !queue.length) return;
   working = true;
   var job = queue.shift();
-  current = { song: job.song, mode: job.mode, step: "Starting", percent: null, handle: null };
+  current = { song: job.song, mode: job.mode, manual: job.manual, step: "Starting", percent: null, handle: null };
   render();
   runJob(job.song, job.mode).then(function (result) {
     if (!api) { job.resolve(result); return; } // deactivated mid-job
@@ -806,15 +823,25 @@ function render() {
     control: w && w.installed ? undefined : { type: "toolbar", buttons: [{ label: "Install", action: "install-whisper", variant: "accent" }] },
   });
 
-  // model
-  var modelRow = { type: "settings-row", label: "Model", description: m.label };
+  // model: one row to choose it, plus a download row only while it's missing
+  children.push({
+    type: "select",
+    label: "Model",
+    description: render.modelReady ? "Downloaded" : modelDownload ? "Downloading…" : "Not downloaded yet",
+    action: "set-model",
+    value: settings.model,
+    options: Object.keys(MODELS).map(function (k) { return { value: k, label: MODELS[k].label }; }),
+  });
   if (modelDownload) {
-    modelRow.child = { type: "progress-bar", value: modelDownload.received, max: modelDownload.total || 1, label: "Downloading " + Math.round(modelDownload.received / 1048576) + " of " + Math.round((modelDownload.total || 0) / 1048576) + " MB" };
+    children.push({ type: "progress-bar", value: modelDownload.received, max: modelDownload.total || 1, label: "Downloading " + Math.round(modelDownload.received / 1048576) + " of " + Math.round((modelDownload.total || 0) / 1048576) + " MB" });
   } else if (!render.modelReady) {
-    modelRow.control = { type: "toolbar", buttons: [{ label: "Download (" + m.sizeMb + " MB)", action: "download-model", variant: "accent" }] };
+    children.push({
+      type: "settings-row",
+      label: "Download the model",
+      description: "Needed before Whisper can listen. From github.com/outcast1000/viboplr-whisper-cpp.",
+      control: { type: "toolbar", buttons: [{ label: "Download (" + m.sizeMb + " MB)", action: "download-model", variant: "accent" }] },
+    });
   }
-  children.push(modelRow);
-  children.push({ type: "select", label: "Which model", action: "set-model", value: settings.model, options: Object.keys(MODELS).map(function (k) { return { value: k, label: MODELS[k].label }; }) });
   children.push({ type: "select", label: "Language", description: "Setting it helps when detection guesses wrong.", action: "set-language", value: settings.language, options: LANGUAGES.map(function (l) { return { value: l[0], label: l[1] }; }) });
   children.push({ type: "toggle", label: "Sync automatically", description: "When a song with plain lyrics starts playing, time its lyrics in the background. Each song is tried once; the menu item \"Sync lyrics with Whisper\" tries again.", action: "set-auto", checked: !!settings.auto });
 
@@ -861,6 +888,10 @@ function activate(pluginApi) {
   }));
   unsubs.push(api.contextMenu.onAction("transcribe", function (target) {
     syncTargets(menuTargets(target), "transcribe").catch(function (e) { notify("Couldn't transcribe: " + e, "error"); });
+  }));
+
+  unsubs.push(api.ui.onAction("show-progress", function () {
+    api.ui.requestAction("open-extension-settings", {});
   }));
 
   unsubs.push(api.playback.onTrackStarted(onTrackStarted));
