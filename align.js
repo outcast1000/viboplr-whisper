@@ -114,6 +114,38 @@
       .filter(function (l) { return l && !isLabelLine(l); });
   }
 
+  // Synced lyrics (LRC) → the plain text to time again, in sung order.
+  //   - Metadata tags ([ar:…], [offset:…]) and empty lines are dropped.
+  //   - A line stamped several times ("[00:30.00][01:45.00]Chorus", a chorus
+  //     written once) is written out once per time, so re-timed lyrics keep
+  //     every repeat; lines are then put in time order.
+  //   - Word-level tags of enhanced LRC ("<00:12.50>") are removed: they are
+  //     not words, and would go to Whisper as prompt text.
+  //   - A line with no stamp keeps the time of the line before it.
+  var LRC_STAMP = /^\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/;
+
+  function lrcToPlain(text) {
+    var out = [];
+    var lastTime = -1;
+    String(text || "").replace(/\r\n?/g, "\n").split("\n").forEach(function (raw, idx) {
+      if (/^\s*\[[a-z]+:[^\]]*\]\s*$/i.test(raw)) return;
+      var rest = raw.trim();
+      var times = [];
+      var m;
+      while ((m = LRC_STAMP.exec(rest))) {
+        times.push(+m[1] * 60 + +m[2] + (m[3] ? +("0." + m[3]) : 0));
+        rest = rest.slice(m[0].length).trim();
+      }
+      rest = rest.replace(/<\d{1,3}:\d{2}(?:[.:]\d{1,3})?>/g, "").replace(/\s+/g, " ").trim();
+      if (!times.length) times = [lastTime];
+      else lastTime = times[times.length - 1];
+      if (!rest) return;
+      times.forEach(function (t) { out.push({ t: t, idx: idx, text: rest }); });
+    });
+    out.sort(function (a, b) { return a.t - b.t || a.idx - b.idx; });
+    return out.map(function (l) { return l.text; }).join("\n");
+  }
+
   var EPS = 1e-9;
 
   function align(lyrics, hyp, opts) {
@@ -309,7 +341,7 @@
     return { lrc: out.join("\n"), lines: kept.length, lastSecs: kept.length ? kept[kept.length - 1].to : 0 };
   }
 
-  var api = { alignLyrics: alignLyrics, transcriptLrc: transcriptLrc, fold: fold, similarity: similarity, formatLrcTime: formatLrcTime, lyricLines: lyricLines };
+  var api = { alignLyrics: alignLyrics, transcriptLrc: transcriptLrc, lrcToPlain: lrcToPlain, fold: fold, similarity: similarity, formatLrcTime: formatLrcTime, lyricLines: lyricLines };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WhisperAlign = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

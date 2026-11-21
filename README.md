@@ -2,8 +2,18 @@
 
 A [Vibo](https://github.com/outcast1000/viboplr) plugin that times a song's plain lyrics from its audio with [whisper.cpp](https://github.com/ggml-org/whisper.cpp), so a song with plain lyrics gets synced ones. Work in progress.
 
-- **Sync lyrics with Whisper** only adds timings to lyrics the song already has. A song with no lyrics is skipped. This is the only job automatic mode runs.
-- **Transcribe with Whisper** is for a track with no lyrics at all, such as a talk, an interview or a video. What Whisper hears is saved as synced lyrics, which Vibo shows as a video's subtitles. It runs only when you ask for it (the menu item or the assistant's `transcribe` tool), and it never replaces lyrics a track already has.
+Two menu items, for four situations:
+
+| The track has | Use | Whisper |
+|---|---|---|
+| No lyrics, and you want synced ones | **Sync lyrics with Whisper** | transcribes what it hears |
+| Plain lyrics | **Sync lyrics with Whisper** | times them |
+| Synced lyrics that are off | **Sync lyrics with Whisper** | drops the old times and times the same words again |
+| Lyrics that are wrong, or a video that needs subtitles | **Transcribe with Whisper** | writes down what it hears, whatever the track has |
+
+- **Every result is a draft you check first.** It opens in Vibo's lyrics editor on the track's page, with a note on what to check (lines it had to guess, a poor match). Edit the words, use Sync to replay a line and nudge its time, then **Save**. Nothing replaces a track's lyrics until you do. Drafts waiting are listed in the plugin's settings under **Ready to review**.
+- **Sync automatically** (off by default) is the exception: nobody is there to review, so it only times plain lyrics, and saves them only when at least 70% of the lines matched. It never transcribes and never touches synced lyrics. The assistant's `sync_lyrics` tool follows the same rules; its `transcribe` tool makes a draft.
+- Progress is shown at the top of the plugin's settings (Extensions → Whisper → Configuration), which the start notice's **Show progress** opens.
 - Local files only for now.
 - `whisper-cli` and the models come from [viboplr-whisper-cpp](https://github.com/outcast1000/viboplr-whisper-cpp).
 

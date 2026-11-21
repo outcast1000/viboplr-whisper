@@ -1,10 +1,10 @@
 {
   "id": "whisper",
   "name": "Whisper Lyrics Sync",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "author": "Vibo",
-  "description": "Times a song's plain lyrics by listening to it with Whisper, so they follow the song, and on request transcribes tracks that have no lyrics (talks, videos) into subtitles. Local files only.",
-  "minAppVersion": "1.0.122",
+  "description": "Gives tracks synced lyrics by listening to them with Whisper: times a song's plain lyrics, re-times synced ones that are off, or transcribes what it hears (talks, videos, songs without lyrics). You check every result in the lyrics editor before it's saved. Local files only.",
+  "minAppVersion": "1.0.124",
   "stability": "experimental",
   "homepage": "https://github.com/outcast1000/viboplr-whisper",
   "updateUrl": "https://github.com/outcast1000/viboplr-whisper/releases/latest/download/update.json",
@@ -63,7 +63,7 @@
     ],
     "settingsPanel": { "id": "whisper-settings", "label": "Whisper", "order": 62 },
     "assistant": {
-      "instructions": "Two jobs, both with whisper.cpp on local library files only; use them instead of transcribing audio yourself. sync_lyrics times a song's existing plain lyrics from its audio and saves them as synced lyrics; it never writes lyrics a song doesn't have, and saves only when at least 70% of lines matched what was sung — otherwise it reports low-confidence and saves nothing. transcribe writes what Whisper hears in a track that has no lyrics at all (a video, a talk, an interview) as synced lyrics, which show as a video's subtitles. Use transcribe only when the user asks for a transcript or subtitles; it never replaces lyrics a track already has, and its text is unchecked, so for a song prefer real lyrics. A long video takes minutes.",
+      "instructions": "Two jobs, both with whisper.cpp on local library files only; use them instead of transcribing audio yourself. sync_lyrics times a song's existing plain lyrics from its audio and saves them as synced lyrics; it never writes lyrics a song doesn't have, and saves only when at least 70% of lines matched what was sung — otherwise it reports low-confidence and saves nothing. transcribe writes what Whisper hears in a track that has no lyrics at all (a video, a talk, an interview) as a DRAFT the user reviews and saves in the app (status draft); it saves nothing itself and never touches lyrics a track already has. Use transcribe only when the user asks for a transcript or subtitles, and tell them the draft waits in Whisper's settings under Ready to review. A long video takes minutes.",
       "tools": [
         {
           "name": "sync_lyrics",
@@ -81,7 +81,7 @@
         {
           "name": "transcribe",
           "readOnly": false,
-          "description": "Transcribe a library track that has no lyrics (a video, a talk) from its audio and save the transcript as synced lyrics, which show as the video's subtitles. Only when the user asked for a transcript or subtitles. Takes about as long as Whisper needs for the whole file (minutes for a long video). Returns status saved / skipped / failed with a reason.",
+          "description": "Transcribe a library track that has no lyrics (a video, a talk) from its audio, as a draft of synced lyrics (a video's subtitles) for the user to review and save in the app. Only when the user asked for a transcript or subtitles. Takes about as long as Whisper needs for the whole file (minutes for a long video). Returns status draft / skipped / failed with a reason; draft means nothing is saved until the user approves it.",
           "inputSchema": {
             "type": "object",
             "properties": {

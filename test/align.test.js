@@ -186,3 +186,20 @@ test("an empty or speechless transcript has no lines", () => {
   assert.deepEqual(transcriptLrc({ transcription: [] }), { lrc: "", lines: 0, lastSecs: 0 });
   assert.equal(transcriptLrc(segments([[0, 30, "[Music]"]]), { durationSecs: 60 }).lrc, "");
 });
+
+test("lrcToPlain: synced lyrics back to the words, for timing them again", () => {
+  const { lrcToPlain } = require("../align.js");
+  assert.equal(
+    lrcToPlain("[ar:Glass Harbour]\r\n[offset:+200]\n[00:01.00]Paper boats\n[00:05.00]\n\nNo stamp here"),
+    "Paper boats\nNo stamp here",
+  );
+  // A chorus written once with two times keeps both repeats, in sung order.
+  assert.equal(
+    lrcToPlain("[00:10.00]Verse one\n[00:30.00][01:45.00]Hey hey hey\n[01:00.00]Verse two"),
+    "Verse one\nHey hey hey\nVerse two\nHey hey hey",
+  );
+  // Enhanced LRC: the word tags go, the words stay.
+  assert.equal(lrcToPlain("[00:12.00]<00:12.00>Hello <00:12.50>world"), "Hello world");
+  assert.equal(lrcToPlain(""), "");
+  assert.equal(lrcToPlain("[00:01.00]\n[00:02.00]"), "");
+});

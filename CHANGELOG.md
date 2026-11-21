@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0
+
+Needs Vibo 1.0.124 or later.
+
+- **You check every result before it's saved.** A sync or a transcription you start now makes a draft. **Review** opens it in Vibo's lyrics editor on the track's page, with a note on what to check: the lines Whisper had to guess, or a warning when few lines matched. Fix the words, nudge the times with Sync, then Save. Discard leaves the track's lyrics as they were. Drafts waiting are listed in the settings under **Ready to review**.
+- **Synced lyrics that are off can be fixed.** **Sync lyrics with Whisper** on a track with synced lyrics drops the old times and times the same words again.
+- **Sync lyrics with Whisper** also transcribes a track that has no lyrics at all, so it covers every track that should keep (or get) its words.
+- **Transcribe with Whisper** now works on any track, lyrics or not: for lyrics that are wrong, or a video's subtitles. The review decides whether the transcript replaces anything.
+- Lyrics that come from the song's own file can now be timed; your Save puts them back in the file.
+- A track whose lyrics couldn't be read (a provider was down) isn't timed or transcribed by Sync; it fails with that reason.
+- **Progress, redone.** The settings show what's being worked on at the top: each track with its step, a progress bar, the time so far and, once Whisper is listening, about how long is left. Tracks waiting are listed below it, each with Cancel, plus **Cancel all**. Cancel works at every step. **Show progress** opens the settings scrolled to that list.
+- Several tracks at once give one notice when the work starts and one summary at the end ("Finished 5 tracks: 4 ready to review, 1 skipped."), instead of one per track.
+- When whisper-cli or the model is missing, the menu says so once, with **Set up**, instead of a failure per track.
+- Recent shows each outcome as a coloured chip, with **Try again** on failed and cancelled tracks, and **Clear**.
+- Automatic syncing and the assistant's `sync_lyrics` still save directly (plain lyrics, at least 70% matched). The assistant's `transcribe` now makes a draft for you to review.
+
 ## 0.2.1
 
 - Fixed: jobs failed before Whisper started, because ffmpeg was given no file to write the audio to.
