@@ -25,7 +25,9 @@ function fakeHost(opts = {}) {
   const files = new Map(Object.entries(opts.files || { "models/ggml-large-v3-turbo-q5_0.bin": "model" }));
   const store = new Map();
   const handlers = { menu: {}, ui: {}, tools: {}, trackStarted: null };
-  const calls = { exec: [], saves: [], notes: [], fetches: 0, views: 0 };
+  const calls = { exec: [], saves: [], notes: [], fetches: 0, views: 0, lastView: null, requests: [] };
+  let whisperMissing = !!opts.whisperMissing;
+  const installListeners = [];
   let lyrics = opts.lyrics === undefined ? { kind: "plain", text: PLAIN } : opts.lyrics;
   const tracks = opts.tracks || { 7: { id: 7, title: "Harbour", artist_name: "Glass Harbour", album_title: "Tides", duration_secs: 200, path: "file:///music/harbour.flac" } };
   let currentTrack = null;
@@ -48,7 +50,7 @@ function fakeHost(opts = {}) {
       },
     },
     system: {
-      getDependency: async () => (opts.whisperMissing ? { name: "whisper-cli", installed: false } : { name: "whisper-cli", installed: true, version: "1.9.6-5907-1" }),
+      getDependency: async () => (whisperMissing ? { name: "whisper-cli", installed: false } : { name: "whisper-cli", installed: true, version: "1.9.6-5907-1" }),
       exec: async (program, args, o) => {
         calls.exec.push({ program, args });
         if (o && o.onStart) o.onStart({ cancel: async () => true });
@@ -60,6 +62,7 @@ function fakeHost(opts = {}) {
         }
         return { exitCode: 0, stdout: "", stderr: "" };
       },
+      ...(opts.hearsInstalls ? { onDependencyInstalled: (h) => { installListeners.push(h); return () => {}; } } : {}),
       programs: { download: async (p) => { files.set(p.join("/"), "model"); return { path: "/store/" + p.join("/"), sha256: "x", size: 1 }; } },
     },
     informationTypes: {
@@ -76,10 +79,10 @@ function fakeHost(opts = {}) {
       getCurrentTrack: () => currentTrack,
     },
     ui: {
-      setViewData: () => { calls.views++; },
+      setViewData: (id, data) => { calls.views++; calls.lastView = data; },
       showNotification: (message, o) => { calls.notes.push({ message, kind: o && o.kind }); },
       onAction: (id, h) => { handlers.ui[id] = h; return () => {}; },
-      requestAction: () => {},
+      requestAction: (action, payload) => { calls.requests.push({ action, payload }); },
     },
     assistant: { onTool: (name, h) => { handlers.tools[name] = h; return () => {}; } },
   };
@@ -87,6 +90,9 @@ function fakeHost(opts = {}) {
     api, handlers, calls, files, store,
     setLyrics(l) { lyrics = l; },
     setCurrent(t) { currentTrack = t; },
+    installWhisper() { whisperMissing = false; },
+    announceInstall(change) { installListeners.forEach((h) => h(change)); },
+    installListenerCount: () => installListeners.length,
   };
 }
 
@@ -225,5 +231,60 @@ test("the assistant tool finds the library song and returns the outcome", async 
   const r = await host.handlers.tools.sync_lyrics({ title: "Harbour", artistName: "Glass Harbour" });
   assert.equal(r.status, "saved");
   await assert.rejects(() => host.handlers.tools.sync_lyrics({}), /title is required/);
+  p.deactivate();
+});
+
+// The whisper-cli row's description, as the settings panel shows it.
+function whisperRow(host) {
+  const row = host.calls.lastView.children.find((c) => c.label === "whisper-cli");
+  return row.description;
+}
+
+test("the panel updates as soon as the host says whisper-cli was installed", async () => {
+  const host = fakeHost({ whisperMissing: true, hearsInstalls: true });
+  const p = await start(host);
+  assert.match(whisperRow(host), /^Not installed/);
+  host.handlers.ui["install-whisper"]();
+  assert.deepEqual(host.calls.requests[0], { action: "require-dependency", payload: { name: "whisper-cli", feature: "Sync lyrics with Whisper" } });
+
+  // Another tool landing changes nothing; ours redraws the row.
+  host.installWhisper();
+  const before = host.calls.views;
+  host.announceInstall({ name: "yt-dlp", version: "2026.11.20" });
+  await settle();
+  assert.equal(host.calls.views, before);
+  host.announceInstall({ name: "whisper-cli", version: "1.9.6-5907-1" });
+  await settle();
+  assert.equal(whisperRow(host), "Installed · 1.9.6-5907-1");
+  p.deactivate();
+});
+
+test("an install started from Extensions → Tools also updates the panel, with no click here", async () => {
+  const host = fakeHost({ whisperMissing: true, hearsInstalls: true });
+  const p = await start(host);
+  host.installWhisper();
+  host.announceInstall({ name: "whisper-cli", version: "1.9.6-5907-1" });
+  await settle();
+  assert.equal(whisperRow(host), "Installed · 1.9.6-5907-1");
+  p.deactivate();
+});
+
+test("on a host without the install event, Install still re-checks on a timer", async () => {
+  const host = fakeHost({ whisperMissing: true });
+  const p = await start(host);
+  assert.equal(host.installListenerCount(), 0);
+  const realSetInterval = global.setInterval;
+  let tick = null;
+  global.setInterval = (fn) => { tick = fn; return 0; };
+  try {
+    host.handlers.ui["install-whisper"]();
+  } finally {
+    global.setInterval = realSetInterval;
+  }
+  assert.equal(typeof tick, "function");
+  host.installWhisper();
+  tick();
+  await settle();
+  assert.equal(whisperRow(host), "Installed · 1.9.6-5907-1");
   p.deactivate();
 });

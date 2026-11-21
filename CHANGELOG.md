@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- The settings panel shows whisper-cli as installed as soon as the install finishes, however long the install dialog was left open, and also when it is installed from Extensions → Tools. Needs a Vibo release with `api.system.onDependencyInstalled`; on older versions the panel re-checks for five minutes after Install, as before.
+
 ## 0.1.0
 
 - First release. Right-click a song (or several) and choose **Sync lyrics with Whisper**: the song's plain lyrics get timings from its audio and are saved as synced lyrics.

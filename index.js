@@ -725,9 +725,19 @@ function activate(pluginApi) {
 
   unsubs.push(api.playback.onTrackStarted(onTrackStarted));
 
+  // Newer hosts say when whisper-cli finishes installing, whoever started it
+  // (our Install button, Extensions → Tools, the update notice).
+  var hearsInstalls = !!(api.system && typeof api.system.onDependencyInstalled === "function");
+  if (hearsInstalls) {
+    unsubs.push(api.system.onDependencyInstalled(function (change) {
+      if (change && change.name === "whisper-cli") refreshPanel();
+    }));
+  }
+
   unsubs.push(api.ui.onAction("install-whisper", function () {
     api.ui.requestAction("require-dependency", { name: "whisper-cli", feature: "Sync lyrics with Whisper" });
-    // The host doesn't say when an install finishes; look again for a while.
+    if (hearsInstalls) return;
+    // Older hosts don't say when an install finishes; look again for a while.
     var tries = 0;
     var t = setInterval(function () {
       tries++;
